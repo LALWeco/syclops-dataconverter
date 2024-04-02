@@ -2,7 +2,13 @@
 
 This repository takes input dataset from Syclops engine and converts the labels into standard Deep learning dataset formats using Datumaro and publically available libraries. 
 
+
+
+# Usage
+
 ```bash
+git clone --recursive git@github.com:LALWeco/syclops-dataconverter.git
+cd syclops-dataconverter
 scripts/syclops2datumaro.sh /path/to/data/root/dir /path/to/dump/labels
 ```
 
