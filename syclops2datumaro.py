@@ -10,6 +10,7 @@ from datumaro.components.annotation import (
     MaskCategories,
 )
 from collections import OrderedDict
+from glob import glob
 from JSON2YOLO.general_json2yolo import convert_coco_json
 label_map = OrderedDict([("none", 0), ("ground", 1), ("maize", 2), ("weed", 3)])
 classes_to_skip = [0]
@@ -39,8 +40,8 @@ def convert_to_datumaro(
     )
 
     # Assuming all directories have corresponding file names
-    image_files = sorted(os.listdir(images_dir))
-
+    image_files = sorted(glob(os.path.join(images_dir, '*.png')))
+    image_files = [os.path.basename(item) for item in image_files]
     for image_file in image_files:
         # if "20" in image_file:
         #     break
@@ -72,8 +73,9 @@ def convert_to_datumaro(
         item = dm.DatasetItem(id=image_name, media=image)
 
         # Load and filter keypoints
-        with open(keypoints_path) as f:
-            keypoints_data = json.load(f)
+        if os.path.exists(keypoints_path):
+            with open(keypoints_path) as f:
+                keypoints_data = json.load(f)
 
         for instance_id in unique_instance_ids:
             num_pixels = np.sum(inst_mask == instance_id)
@@ -100,18 +102,18 @@ def convert_to_datumaro(
                 instance_idx, label=class_id, group=instance_id, object_id=instance_id
             )
             item.annotations.append(inst_mask_datumaro)
-
-            if str(instance_id) in keypoints_data.keys():
-                for kp_id, kp in keypoints_data[str(instance_id)].items():
-                    if kp_id != "class_id":
-                        item.annotations.append(
-                            dm.Points(
-                                [float(kp["x"]), float(kp["y"])],
-                                label=int(kp_id),
-                                group=instance_id,
-                                object_id=instance_id,
+            if os.path.exists(keypoints_path):
+                if str(instance_id) in keypoints_data.keys():
+                    for kp_id, kp in keypoints_data[str(instance_id)].items():
+                        if kp_id != "class_id":
+                            item.annotations.append(
+                                dm.Points(
+                                    [float(kp["x"]), float(kp["y"])],
+                                    label=int(kp_id),
+                                    group=instance_id,
+                                    object_id=instance_id,
+                                )
                             )
-                        )
 
             # Add bounding box
             bbox = inst_mask_datumaro.get_bbox()
@@ -123,27 +125,31 @@ def convert_to_datumaro(
             dataset.put(item)
 
     
-    if flags == 'datumaro':
+    if 'datumaro' in flags.output_formats:
         # Export dataset in Datumaro format
         dataset.export(output_dir, format="datumaro")
     # dataset.export(output_dir, format="coco")
-    if flags == 'coco':
+    if 'coco' in flags.output_formats:
         splits = [("train", 0.8), ("val", 0.2)]
         task = splitter.SplitTask.segmentation.name
         new_dataset = dataset.transform("split", task=task, splits=splits, seed=42)
         new_dataset.export(output_dir, 
                         #    save_media=True, 
                         format="coco")
-    if flags == 'yolo_ultralytics_det':
+    if 'yolo_ultralytics_det' in flags.output_formats:
         splits = [("train", 0.8), ("val", 0.2)]
         task = splitter.SplitTask.detection.name
         new_dataset = dataset.transform("split", task=task, splits=splits, seed=42)
         new_dataset.export(output_dir, 
                         #    save_media=True, 
                            format="yolo_ultralytics")
-    if flags == 'yolo_ultralytics_seg':
+    if 'yolo_ultralytics_seg' in flags.output_formats:
         # NOTE : YOLO segmentation format is not supported by Datumaro==1.5.2
-        convert_coco_json(output_dir, dataset, label_map, classes_to_skip)
+        convert_coco_json(json_dir=os.path.join(output_dir, 'annotations'), 
+                        save_dir=output_dir,  # NOTE : Yolov5 and Yolov7 (Yolov8?) expects label files in the same directory as images
+                        use_segments=True,      # This is needed to get RLE masks from COCO format to YOLO format
+                        cls91to80=True    # TODO Does this break anything or is even needed? 
+                        )
 
     
 
@@ -152,8 +158,7 @@ if __name__ == "__main__":
     parser.add_argument('--base_dir', type=str, default='/mnt/d/datasets/sugarbeets', help='Root directory of the generated dataset')
     parser.add_argument('--output_formats',
                     default='datumaro',
-                    const='all',
-                    nargs='?',
+                    nargs='+',
                     choices=['datumaro', 'coco', 'yolo_ultralytics_det', 'yolo_ultralytics_seg'],
                     help='Currently supported output labelling formats (default: %(default)s)')
     flags = parser.parse_args()
@@ -164,4 +169,5 @@ if __name__ == "__main__":
         os.path.join(flags.base_dir, "main_camera_annotations/keypoints"),
         os.path.join(flags.base_dir, "datumaro_dataset"),
         classes_to_skip,
+        flags=flags,
     )
