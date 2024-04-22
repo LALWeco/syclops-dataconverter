@@ -15,6 +15,7 @@ LABEL_MAP = OrderedDict([("ground", 0), ("maize", 1), ("weed", 2)])
 CLASSES_TO_SKIP = [0]
 INSTANCE_PIXEL_THRESHOLD = 0.01
 INSTANCE_COUNT_THRESHOLD = 5
+NUM_KEYPOINTS = 1
 
 
 def create_syclops_categories(label_map):
@@ -242,6 +243,75 @@ def convert_to_datumaro(
             save_media=True,
         )
 
+    if "yolo_ultralytics_pose" in flags.output_formats:
+        yolo_pose_output_dir = os.path.join(output_dir, "yolo_ultralytics_pose")
+        os.makedirs(yolo_pose_output_dir, exist_ok=True)
+
+        # Split data into train and val sets
+        splits = [("train", flags.train_ratio), ("val", 1 - flags.train_ratio)]
+        split_dataset = dataset.transform("split", task="detection", splits=splits)
+
+        for split_name, split_subset in split_dataset.subsets().items():
+            split_dir_image = os.path.join(yolo_pose_output_dir, "images", split_name)
+            split_dir_label = os.path.join(yolo_pose_output_dir, "labels", split_name)
+            os.makedirs(split_dir_image, exist_ok=True)
+            os.makedirs(split_dir_label, exist_ok=True)
+
+            for item in split_subset:
+                image_name = item.id
+                image_path = os.path.join(split_dir_image, image_name + ".jpg")
+                label_path = os.path.join(split_dir_label, image_name + ".txt")
+
+                # Save image
+                item.media.save(image_path)
+
+                # Save labels
+                with open(label_path, "w") as f:
+                    for ann in item.annotations:
+                        if ann.type == AnnotationType.bbox:
+                            class_id = ann.label
+                            bbox = ann.get_bbox()
+                            x_center = (bbox[0] + bbox[2] / 2) / width
+                            y_center = (bbox[1] + bbox[3] / 2) / height
+                            bbox_width = bbox[2] / width
+                            bbox_height = bbox[3] / height
+
+                            keypoints = []
+                            visibilities = []
+                            for kp_id in range(NUM_KEYPOINTS):
+                                kp_found = False
+                                for kp_ann in item.annotations:
+                                    if (
+                                        kp_ann.type == AnnotationType.points
+                                        and kp_ann.group == ann.group
+                                        and kp_ann.label == kp_id
+                                    ):
+                                        kp_x = kp_ann.points[0] / width
+                                        kp_y = kp_ann.points[1] / height
+                                        keypoints.extend([kp_x, kp_y])
+                                        visibilities.append(1)
+                                        kp_found = True
+                                        break
+                                if not kp_found:
+                                    keypoints.extend([0, 0])
+                                    visibilities.append(0)
+
+                            f.write(
+                                f"{class_id} {x_center} {y_center} {bbox_width} {bbox_height} "
+                                f"{' '.join(map(str, keypoints))} {' '.join(map(str, visibilities))}\n"
+                            )
+
+        # Save dataset YAML
+        dataset_yaml = {
+            "path": os.path.abspath(yolo_pose_output_dir),
+            "train": "images/train",
+            "val": "images/val",
+            "names": {i: name for i, name in enumerate(LABEL_MAP.keys())},
+            "kpt_shape": [NUM_KEYPOINTS, 3],
+        }
+        with open(os.path.join(yolo_pose_output_dir, "dataset.yaml"), "w") as f:
+            yaml.dump(dataset_yaml, f)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -253,9 +323,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--output_formats",
-        default="yolo_ultralytics_seg",
+        default="yolo_ultralytics_pose",
         nargs="+",
-        choices=["datumaro", "coco", "yolo_ultralytics_det", "yolo_ultralytics_seg"],
+        choices=[
+            "datumaro",
+            "coco",
+            "yolo_ultralytics_det",
+            "yolo_ultralytics_seg",
+            "yolo_ultralytics_pose",
+        ],
         help="Currently supported output labelling formats (default: %(default)s)",
     )
     parser.add_argument(
